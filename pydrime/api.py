@@ -480,7 +480,7 @@ class DrimeClient:
                     # This often means authentication failed
                     if "text/html" in content_type:
                         raise DrimeAuthenticationError(
-                            "Invalid API key. The stored API key is not valid.\n"
+                            f"Invalid API key. The stored API key is not valid (status={response.status_code}).\n"
                             "Please run 'pydrime init' to configure a valid API key, "
                             "or use the -k flag to provide one."
                         )
@@ -875,12 +875,14 @@ class DrimeClient:
         mime_type = self._detect_mime_type(file_path)
 
         # Initialize multipart upload
+        from posixpath import dirname as posix_dirname
+
         init_data: dict[str, Any] = {
             "filename": file_name,
             "mime": mime_type,
             "size": file_size,
             "extension": extension,
-            "relativePath": relative_path or "",
+            "relativePath": posix_dirname(relative_path) if relative_path else "",
             "workspaceId": workspace_id,
         }
         if parent_id is not None:
@@ -964,23 +966,32 @@ class DrimeClient:
             uploaded_parts.sort(key=lambda x: x["PartNumber"])
 
             # Complete multipart upload
-            self._request(
+            complete_response = self._request(
                 "POST",
                 "/s3/multipart/complete",
                 json={
                     "key": key,
                     "uploadId": upload_id,
                     "parts": uploaded_parts,
+                    "clientMime": mime_type,
+                    "clientName": file_name,
+                    "filename": key.split("/")[-1],
+                    "size": file_size,
+                    "clientExtension": extension,
+                    "relativePath": relative_path or "",
+                    "workspaceId": workspace_id,
+                    **({"parentId": parent_id} if parent_id is not None else {}),
                 },
             )
+            logger.debug(f"Multipart complete response: {complete_response}")
 
-            # Create file entry
+            # Create file entry using /s3/entries
             entry_data: dict[str, Any] = {
                 "clientMime": mime_type,
                 "clientName": file_name,
                 "filename": key.split("/")[-1],
                 "size": file_size,
-                "clientExtension": extension,
+                "clientExtension": extension if extension else "bin",
                 "relativePath": relative_path or "",
                 "workspaceId": workspace_id,
             }
@@ -991,8 +1002,8 @@ class DrimeClient:
                 "POST",
                 "/s3/entries",
                 json=entry_data,
+                headers={"Accept": "application/json"},
             )
-
             return entry_response
 
         except Exception as e:
@@ -1048,12 +1059,14 @@ class DrimeClient:
         extension = file_path.suffix.lstrip(".") if file_path.suffix else ""
 
         # Step 1: Get presigned URL
+        from posixpath import dirname as posix_dirname
+
         presign_payload: dict[str, Any] = {
             "filename": file_path.name,
             "mime": mime_type,
             "size": file_size,
             "extension": extension,
-            "relativePath": relative_path or "",
+            "relativePath": posix_dirname(relative_path) if relative_path else "",
             "workspaceId": workspace_id,
             "parentId": parent_id,
         }
@@ -1101,19 +1114,23 @@ class DrimeClient:
             progress_callback(file_size, file_size)
 
         # Step 3: Create file entry
+        from posixpath import dirname as posix_dirname
+
         entry_payload: dict[str, Any] = {
             "clientMime": mime_type,
             "clientName": file_path.name,
             "filename": key.split("/")[-1],
             "size": file_size,
-            "clientExtension": extension,
-            "relativePath": relative_path or "",
+            "clientExtension": extension if extension else "bin",
+            "relativePath": posix_dirname(relative_path) if relative_path else "",
             "workspaceId": workspace_id,
         }
         if parent_id is not None:
             entry_payload["parentId"] = parent_id
 
-        entry_response = self._request("POST", "/s3/entries", json=entry_payload)
+        entry_response = self._request(
+            "POST", "/s3/entries", json=entry_payload, headers={"Accept": "application/json"}
+        )
         return entry_response
 
     def _verify_upload_response(
