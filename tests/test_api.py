@@ -1794,7 +1794,7 @@ class TestMimeTypeDetection:
 
         # Mock S3 request response (now using httpx.request instead of httpx.put)
         mock_s3_response = Mock()
-        mock_s3_response.headers = {"ETag": "test-etag"}
+        mock_s3_response.headers = {"ETag": '"test-etag"'}
         mock_httpx_request.return_value = mock_s3_response
 
         test_file = Path("/fake/path/test.bin")
@@ -1810,6 +1810,16 @@ class TestMimeTypeDetection:
 
         # Verify MIME detection was called
         mock_detect_mime.assert_called_once_with(test_file)
+
+        # Verify the complete call payload has correct keys (PascalCase)
+        # call_args_list[2] is the /s3/multipart/complete call
+        complete_args = mock_request.call_args_list[2]
+        assert complete_args.args[0] == "POST"
+        assert complete_args.args[1] == "/s3/multipart/complete"
+        parts = complete_args.kwargs["json"]["parts"]
+        assert len(parts) == 1
+        assert parts[0]["PartNumber"] == 1
+        assert parts[0]["ETag"] == '"test-etag"'
 
 
 class TestUploadVerification:
@@ -1981,7 +1991,7 @@ class TestUploadVerification:
                     max_upload_retries=3,
                 )
 
-            assert "verification failed after 3 attempts" in str(exc_info.value)
+            assert "failed after 3 attempts" in str(exc_info.value)
         finally:
             test_file.unlink()
 

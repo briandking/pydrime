@@ -767,6 +767,7 @@ class DrimeClient:
         file_size = file_path.stat().st_size
         file_name = file_path.name
         mime_type = self._detect_mime_type(file_path)
+        extension = file_path.suffix.lstrip(".") if file_path.suffix else "bin"
 
         # Build the relative path including filename
         # relative_path can be:
@@ -801,6 +802,7 @@ class DrimeClient:
                 data: dict[str, Any] = {
                     "relativePath": full_relative_path,
                     "workspaceId": str(workspace_id),
+                    "extension": extension,
                 }
                 if parent_id is not None:
                     data["parentId"] = str(parent_id)
@@ -869,7 +871,7 @@ class DrimeClient:
 
         file_size = file_path.stat().st_size
         file_name = file_path.name
-        extension = file_path.suffix.lstrip(".")
+        extension = file_path.suffix.lstrip(".") if file_path.suffix else "bin"
         num_parts = math.ceil(file_size / chunk_size)
 
         # Detect MIME type
@@ -1269,8 +1271,9 @@ class DrimeClient:
 
         def _do_upload() -> Any:
             """Perform the actual upload."""
-            # Use multipart upload for large files
-            if file_size > use_multipart_threshold:
+            extension = file_path.suffix.lstrip(".") if file_path.suffix else ""
+            # Use multipart upload for large files or files with no extension
+            if file_size > use_multipart_threshold or not extension:
                 return self.upload_file_multipart(
                     file_path=file_path,
                     relative_path=upload_filename,  # Just the filename now
@@ -1296,7 +1299,20 @@ class DrimeClient:
         # Upload with verification and retry logic
         last_error = ""
         for attempt in range(max_upload_retries):
-            result = _do_upload()
+            try:
+                result = _do_upload()
+            except DrimeUploadError as e:
+                last_error = str(e)
+                if attempt < max_upload_retries - 1:
+                    if message_callback:
+                        message_callback(
+                            f"Upload failed for '{file_path.name}': {e}. "
+                            f"Retrying ({attempt + 2}/{max_upload_retries})..."
+                        )
+                    delay = self._calculate_retry_delay(attempt)
+                    time.sleep(delay)
+                    continue
+                raise
 
             # Verify directly from the upload response
             is_valid, error_msg = self._verify_upload_response(
@@ -1326,13 +1342,13 @@ class DrimeClient:
                             workspace_id=workspace_id,
                         )
                     except Exception:
-                        # Ignore deletion errors, just proceed with retry
                         pass
+                delay = self._calculate_retry_delay(attempt)
+                time.sleep(delay)
 
         # All retries exhausted
         raise DrimeUploadError(
-            f"Upload verification failed after {max_upload_retries} attempts: "
-            f"{last_error}"
+            f"Upload failed after {max_upload_retries} attempts: {last_error}"
         )
 
     # =========================
