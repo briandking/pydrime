@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
@@ -920,45 +921,47 @@ class DrimeClient:
                     urls_list = sign_response.get("urls", [])
                     signed_urls = {u["partNumber"]: u["url"] for u in urls_list}
 
-                    # Upload each part
+                    # Read all chunks for this batch
+                    chunks: list[tuple[int, bytes]] = []
                     for pn in part_numbers:
                         chunk = f.read(chunk_size)
                         if not chunk:
                             break
+                        chunks.append((pn, chunk))
 
+                    def _upload_chunk(pn_chunk: tuple[int, bytes]) -> dict:
+                        pn, chunk_data = pn_chunk
                         signed_url = signed_urls.get(pn)
                         if not signed_url:
                             raise DrimeUploadError(f"No signed URL for part {pn}")
 
-                        # Upload chunk to S3 with retry logic
                         headers = {
                             "Content-Type": "application/octet-stream",
-                            "Content-Length": str(len(chunk)),
+                            "Content-Length": str(len(chunk_data)),
                         }
 
                         response = self._s3_request_with_retry(
                             method="PUT",
                             url=signed_url,
-                            content=chunk,
+                            content=chunk_data,
                             headers=headers,
                             context=f"S3 multipart upload part {pn}",
                         )
 
-                        # Preserve raw ETag (must be quoted for the completion API)
                         etag = response.headers.get("ETag", "")
                         if etag and not etag.startswith('"'):
                             etag = f'"{etag}"'
-                        
-                        uploaded_parts.append(
-                            {
-                                "PartNumber": pn,
-                                "ETag": etag,
-                            }
-                        )
 
-                        bytes_uploaded += len(chunk)
-                        if progress_callback:
-                            progress_callback(bytes_uploaded, file_size)
+                        return {"PartNumber": pn, "ETag": etag}
+
+                    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+                        for result in executor.map(_upload_chunk, chunks):
+                            uploaded_parts.append(result)
+
+                    batch_bytes = sum(len(c) for _, c in chunks)
+                    bytes_uploaded += batch_bytes
+                    if progress_callback:
+                        progress_callback(bytes_uploaded, file_size)
 
                     part_number += batch_size
 
