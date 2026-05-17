@@ -1,0 +1,15 @@
+services:
+  pydrime:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        VERSION: ${VERSION:-0.0.0}
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - DRIME_API_KEY=${DRIME_API_KEY:?error}
+      - PYDRIME_SERVER_MODE=${PYDRIME_SERVER_MODE:-s3}
+      - PYDRIME_LISTEN=${PYDRIME_LISTEN:-:8000}
+      - PYDRIME_WORKSPACE=${PYDRIME_WORKSPACE:-}
+    restart: unless-stopped
